@@ -1,0 +1,36 @@
+<!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
+<idea-plugin>
+    <id>com.example.AIPlugin</id>
+    <name>AI-TA</name>
+    <vendor url="https://www.yourcompany.com">YourCompany</vendor>
+
+    <description><![CDATA[
+        A Teaching Assistant plugin for the Java Enterprise Application Development course.
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.java</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <!-- Register the application service -->
+        <projectService
+                serviceImplementation="com.example.aiplugin.service.MockTaService"
+                serviceInterface="com.example.aiplugin.service.TaService"/>
+
+        <!-- Register the tool window -->
+        <toolWindow
+                id="AI-TA"
+                anchor="right"
+                factoryClass="com.example.aiplugin.ui.ChatToolWindowFactory"/>
+    </extensions>
+
+    <actions>
+        <!-- Register the right-click menu action -->
+        <action id="com.example.aiplugin.action.AskAboutCodeAction"
+                class="com.example.aiplugin.action.AskAboutCodeAction"
+                text="Ask AI-TA About This Code"
+                description="Ask the AI assistant a question about the selected code.">
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+        </action>
+    </actions>
+</idea-plugin>

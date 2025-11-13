@@ -1,0 +1,20 @@
+# Gradle
+.gradle
+build/
+
+# Ignore Gradle distribution zips, but not the wrapper jar itself.
+gradle/wrapper/gradle-*-bin.zip
+gradle/wrapper/gradle-*-all.zip
+
+### IntelliJ IDEA ###
+.idea/
+*.iws
+*.iml
+*.ipr
+out/
+
+# Log files
+*.log
+
+# Mac OS
+.DS_Store
