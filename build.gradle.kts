@@ -18,6 +18,30 @@ repositories {
 // Configure IntelliJ Platform Gradle Plugin
 // Read more: https://plugins.jetbrains.com/docs/intellij/tools-intellij-platform-gradle-plugin.html
 dependencies {
+    implementation("dev.langchain4j:langchain4j:0.34.0")
+
+    // ✅ 排除 Tika 自带的 PDFBox 依赖
+    implementation("org.apache.tika:tika-core:2.9.1") {
+        exclude(group = "org.apache.pdfbox")
+    }
+    implementation("org.apache.tika:tika-parsers-standard-package:2.9.1") {
+        exclude(group = "org.apache.pdfbox")
+    }
+
+    implementation("org.apache.commons:commons-text:1.12.0")
+
+    // ✅ 显式指定 PDFBox 2.0.31
+    implementation("org.apache.pdfbox:pdfbox:2.0.31")
+    implementation("org.apache.pdfbox:pdfbox-tools:2.0.31")
+    implementation("org.apache.pdfbox:fontbox:2.0.31")
+
+    // ✅ 直接添加 xalan（作为 implementation，不是 jarJarArchives）
+    implementation("xalan:xalan:2.7.3")
+    implementation("xalan:serializer:2.7.3")
+
+    implementation("javax.xml.bind:jaxb-api:2.3.1")
+    implementation("org.glassfish.jaxb:jaxb-runtime:2.3.1")
+    implementation("org.slf4j:slf4j-nop:2.0.13")
     implementation("org.json:json:20231013")
     implementation("com.openai:openai-java:1.0.0")
     implementation("com.squareup.okhttp3:okhttp:4.9.1")
