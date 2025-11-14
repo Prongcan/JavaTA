@@ -2,6 +2,8 @@ package com.example.aiplugin.service;
 
 import com.intellij.openapi.project.Project;
 
+import java.io.IOException;
+
 /**
  * The core service interface for the AI Teaching Assistant.
  * Team members should implement this interface to provide the actual RAG and LLM logic.
