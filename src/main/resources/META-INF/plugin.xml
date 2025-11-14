@@ -25,6 +25,13 @@
     </extensions>
 
     <actions>
+        <!-- Register the PDF/PPT parsing test action -->
+        <action id="com.example.aiplugin.action.TestPdfParsingAction"
+                class="com.example.aiplugin.action.TestPdfParsingAction"
+                text="Test PDF/PPT Parsing"
+                description="Test PDF/PPT parsing, chunking, and indexing functionality.">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
         <!-- Register the right-click menu action -->
         <action id="com.example.aiplugin.action.AskAboutCodeAction"
                 class="com.example.aiplugin.action.AskAboutCodeAction"

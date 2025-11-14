@@ -1,22 +1,33 @@
 package com.example.aiplugin.service;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.reflect.TypeToken;
 import okhttp3.*;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.text.PDFTextStripper;
 
 import java.io.File;
 import java.io.FileWriter;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.net.Proxy;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
-public class Retrieval {
+public class Retrieval { 
 
-    private static final String VECTOR_FILE = "embeddings.json";
-    private static final String OPENAI_API_URL = "https://api.openai.com/v1/embeddings";
+    private final Config config = Config.load();
+
     private static final MediaType JSON = MediaType.parse("application/json; charset=utf-8");
 
     /**
@@ -25,12 +36,23 @@ public class Retrieval {
     static class EmbeddingItem {
         String text;
         List<Float> vector;
+        String sourcePath; // 来源文件绝对路径
+        int pageStart;     // 起始页（1-based）
+        int pageEnd;       // 结束页（1-based）
 
         EmbeddingItem() {}
 
         EmbeddingItem(String text, List<Float> vector) {
             this.text = text;
             this.vector = vector;
+        }
+
+        EmbeddingItem(String text, List<Float> vector, String sourcePath, int pageStart, int pageEnd) {
+            this.text = text;
+            this.vector = vector;
+            this.sourcePath = sourcePath;
+            this.pageStart = pageStart;
+            this.pageEnd = pageEnd;
         }
     }
 
@@ -39,6 +61,9 @@ public class Retrieval {
     private final Gson gson = new Gson();
     private List<EmbeddingItem> vectorStore = new ArrayList<>();
 
+    // Track processed PDFs: path -> lastModified
+    private java.util.Map<String, Long> processedPdfs = new java.util.HashMap<>();
+
     /**
      * 构造方法，自动加载本地 embeddings
      */
@@ -46,11 +71,14 @@ public class Retrieval {
         this.apiKey = apiKey;
 
         // 设置本地 127.0.0.1:7897 代理
-        this.httpClient = new OkHttpClient.Builder()
-                .proxy(new Proxy(Proxy.Type.HTTP, new InetSocketAddress("127.0.0.1", 7897)))
-                .build();
+        OkHttpClient.Builder builder = new OkHttpClient.Builder();
+        if (config.isProxyEnabled()) {
+            builder.proxy(new Proxy(Proxy.Type.HTTP, new InetSocketAddress(config.getProxyHost(), config.getProxyPort())));
+        }
+        this.httpClient = builder.build();
 
         loadLocalEmbeddings();
+        loadProcessedPdfs();
     }
 
     /**
@@ -58,7 +86,7 @@ public class Retrieval {
      */
     private void loadLocalEmbeddings() {
         try {
-            File file = new File(VECTOR_FILE);
+            File file = new File(config.getVectorFile());
             if (!file.exists()) {
                 return;
             }
@@ -82,11 +110,151 @@ public class Retrieval {
      * 将向量保存到本地 JSON 文件
      */
     private void saveLocalEmbeddings() {
-        try (FileWriter writer = new FileWriter(VECTOR_FILE, StandardCharsets.UTF_8)) {
+        try (FileWriter writer = new FileWriter(config.getVectorFile(), StandardCharsets.UTF_8)) {
             gson.toJson(vectorStore, writer);
         } catch (Exception e) {
             e.printStackTrace();
         }
+    }
+
+    // ---- 处理已解析 PDF 的状态 ----
+    private void loadProcessedPdfs() {
+        try {
+            File file = new File(config.getProcessedPdfsFile());
+            if (!file.exists()) return;
+            String json = new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
+            java.lang.reflect.Type type = new TypeToken<Map<String, Long>>(){}.getType();
+            Map<String, Long> map = gson.fromJson(json, type);
+            if (map != null) processedPdfs.putAll(map);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void saveProcessedPdfs() {
+        try (FileWriter writer = new FileWriter(config.getProcessedPdfsFile(), StandardCharsets.UTF_8)) {
+            gson.toJson(processedPdfs, writer);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    // ---- PDF 索引：遍历、逐页解析、分块（带出处）、embedding 并保存 ----
+    public void indexPdfDirectory(String rootDir) throws IOException {
+        File root = new File(rootDir);
+        if (!root.exists() || !root.isDirectory()) return;
+        List<File> pdfs = collectPdfs(root);
+        for (File pdf : pdfs) {
+            long lm = pdf.lastModified();
+            String key = pdf.getAbsolutePath();
+            Long prev = processedPdfs.get(key);
+            if (prev != null && prev == lm) {
+                // 已处理且未修改，跳过
+                continue;
+            }
+            int savedCount = 0; // 本文件成功写入的分块数
+            // 逐页解析并分块
+            try (PDDocument doc = PDDocument.load(pdf)) {
+                PDFTextStripper stripper = new PDFTextStripper();
+                int pageCount = doc.getNumberOfPages();
+                for (int page = 1; page <= pageCount; page++) {
+                    stripper.setStartPage(page);
+                    stripper.setEndPage(page);
+                    String pageText = stripper.getText(doc);
+                    if (pageText == null || pageText.trim().isEmpty()) continue;
+                    for (String chunk : chunkText(pageText, 400, 200)) {
+                        try {
+                            List<Float> vec = getEmbedding(chunk);
+                            saveEmbedding(chunk, vec, pdf.getAbsolutePath(), page, page);
+                            savedCount++;
+                        } catch (Exception e) {
+                            System.err.println("Embedding chunk error: " + e.getMessage());
+                        }
+                    }
+                }
+            }
+            // 只有当至少有一个分块成功保存时才标记为已处理
+            if (savedCount > 0) {
+                processedPdfs.put(key, lm);
+                saveProcessedPdfs();
+            } else {
+                System.err.println("No chunks saved for: " + key + ". Will not mark as processed.");
+            }
+        }
+    }
+
+    public void pruneDeletedSources(String rootDir) {
+        try {
+            File root = new File(rootDir);
+            String rootPath = root.getAbsolutePath();
+
+            // 1) Prune processedPdfs entries
+            java.util.Iterator<Map.Entry<String, Long>> it = processedPdfs.entrySet().iterator();
+            while (it.hasNext()) {
+                Map.Entry<String, Long> e = it.next();
+                String path = e.getKey();
+                if (path.startsWith(rootPath)) {
+                    if (!new File(path).exists()) {
+                        it.remove();
+                    }
+                }
+            }
+            saveProcessedPdfs();
+
+            // 2) Prune vectorStore embeddings whose source under root no longer exists
+            List<EmbeddingItem> kept = new ArrayList<>();
+            int removed = 0;
+            for (EmbeddingItem item : vectorStore) {
+                if (item.sourcePath != null && item.sourcePath.startsWith(rootPath)) {
+                    if (!new File(item.sourcePath).exists()) {
+                        removed++;
+                        continue;
+                    }
+                }
+                kept.add(item);
+            }
+            if (removed > 0) {
+                vectorStore = kept;
+                saveLocalEmbeddings();
+                System.out.println("[Prune] Removed " + removed + " stale embedding chunks under " + rootPath);
+            }
+        } catch (Exception e) {
+            System.err.println("[Prune] Error: " + e.getMessage());
+        }
+    }
+
+    private List<File> collectPdfs(File dir) {
+        List<File> out = new ArrayList<>();
+        File[] list = dir.listFiles();
+        if (list == null) return out;
+        for (File f : list) {
+            if (f.isDirectory()) out.addAll(collectPdfs(f));
+            else if (f.getName().toLowerCase().endsWith(".pdf")) out.add(f);
+        }
+        return out;
+    }
+
+    private String extractTextFromPdf(File pdf) throws IOException {
+        try (PDDocument doc = PDDocument.load(pdf)) {
+            PDFTextStripper stripper = new PDFTextStripper();
+            return stripper.getText(doc);
+        }
+    }
+
+    private List<String> chunkText(String text, int chunkSize, int overlap) {
+        List<String> chunks = new ArrayList<>();
+        if (text == null) return chunks;
+        int n = text.length();
+        int start = 0;
+        while (start < n) {
+            int end = Math.min(n, start + chunkSize);
+            String chunk = text.substring(start, end).trim();
+            if (!chunk.isEmpty()) chunks.add(chunk);
+            if (end >= n) break;
+            start = end - overlap;
+            if (start < 0) start = 0;
+        }
+        return chunks;
     }
 
     /**
@@ -94,9 +262,14 @@ public class Retrieval {
      */
     public List<Float> getEmbedding(String text) {
         try {
+            // Log request
+            String preview = text == null ? "" : text.replaceAll("\n", " ");
+            if (preview.length() > 120) preview = preview.substring(0, 120) + "...";
+            System.out.println("[Embedding] Request: len=" + (text == null ? 0 : text.length()) + ", preview=\"" + preview + "\"");
+
             // 构造 JSON 请求
             JsonObject bodyJson = new JsonObject();
-            bodyJson.addProperty("model", "text-embedding-3-small");
+            bodyJson.addProperty("model", config.getEmbeddingModel());
 
             JsonArray inputArray = new JsonArray();
             inputArray.add(text);
@@ -105,7 +278,7 @@ public class Retrieval {
             RequestBody body = RequestBody.create(JSON, bodyJson.toString());
 
             Request request = new Request.Builder()
-                    .url(OPENAI_API_URL)
+                    .url(config.getEmbeddingApiUrl())
                     .post(body)
                     .addHeader("Authorization", "Bearer " + apiKey)
                     .addHeader("Content-Type", "application/json")
@@ -129,9 +302,17 @@ public class Retrieval {
                 vector.add(vectorJson.get(i).getAsFloat());
             }
 
+            // Log response
+            String head = "";
+            for (int i = 0; i < Math.min(8, vector.size()); i++) {
+                head += (i == 0 ? "" : ", ") + String.format("%.5f", vector.get(i));
+            }
+            System.out.println("[Embedding] Response: dims=" + vector.size() + ", head=[" + head + "]");
+
             return vector;
 
         } catch (Exception e) {
+            System.err.println("[Embedding] Error: " + e.getMessage());
             throw new RuntimeException("调用 embedding 失败", e);
         }
     }
@@ -141,6 +322,11 @@ public class Retrieval {
      */
     public void saveEmbedding(String text, List<Float> embedding) {
         vectorStore.add(new EmbeddingItem(text, embedding));
+        saveLocalEmbeddings();
+    }
+
+    public void saveEmbedding(String text, List<Float> embedding, String sourcePath, int pageStart, int pageEnd) {
+        vectorStore.add(new EmbeddingItem(text, embedding, sourcePath, pageStart, pageEnd));
         saveLocalEmbeddings();
     }
 
@@ -161,24 +347,43 @@ public class Retrieval {
     }
 
     /**
-     * 查找最相似的文本
+     * 查找最相似的文本（旧接口）
      */
     public String searchMostSimilar(String queryText) {
+        return searchMostSimilar(queryText, -1.0);
+    }
+
+    public String searchMostSimilar(String queryText, double threshold) {
+        List<Match> top1 = searchTopK(queryText, 1, threshold);
+        if (top1.isEmpty()) return "";
+        return top1.get(0).item.text;
+    }
+
+    /**
+     * 带元数据的匹配结果
+     */
+    public static class Match {
+        public EmbeddingItem item;
+        public double score;
+        public Match(EmbeddingItem item, double score) { this.item = item; this.score = score; }
+    }
+
+    /**
+     * Top-K 语义检索，返回包含来源页码等信息
+     */
+    public List<Match> searchTopK(String queryText, int k, double threshold) {
         List<Float> queryEmbedding = getEmbedding(queryText);
-
-        EmbeddingItem best = null;
-        double bestScore = -1;
-
+        List<Match> matches = new ArrayList<>();
         for (EmbeddingItem item : vectorStore) {
             double score = cosineSimilarity(queryEmbedding, item.vector);
-
-            if (score > bestScore) {
-                bestScore = score;
-                best = item;
-            }
+            if (threshold > 0 && score < threshold) continue;
+            matches.add(new Match(item, score));
         }
-
-        return best != null ? best.text : null;
+        matches.sort((a, b) -> Double.compare(b.score, a.score));
+        if (k > 0 && matches.size() > k) {
+            return new ArrayList<>(matches.subList(0, k));
+        }
+        return matches;
     }
 
     /**
@@ -186,7 +391,8 @@ public class Retrieval {
      */
     public static void main(String[] args) {
 
-        Retrieval retrieval = new Retrieval("your api key");
+        Config cfg = Config.load();
+        Retrieval retrieval = new Retrieval(cfg.getOpenAIKey());
 
         retrieval.saveEmbedding("Java 是一种面向对象的编程语言。",
                 retrieval.getEmbedding("Java 是一种面向对象的编程语言。"));

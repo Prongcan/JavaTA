@@ -6,17 +6,14 @@ import java.net.URL;
 import java.util.Scanner;
 import org.json.JSONArray;
 import org.json.JSONObject;
-/**
- * A mock implementation of the TaService for UI development and testing.
- * This class provides placeholder responses without making actual AI/LLM calls.
- */
+
 public class RealTaService implements TaService {
 
     @Override
     public String askQuestion(String question){
         try {
             // 将 chat 方法的调用放入 try 块中
-            String response = chat(question, "deepseek", "your api key");
+            String response = chat(question, "deepseek", "sk-8cc37591bfce4d00b473f6f7f844a22a");
             return response;
         } catch (IOException e) {
             throw new RuntimeException("Error communicating with DeepSeek API.", e);
@@ -31,8 +28,7 @@ public class RealTaService implements TaService {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
-        return "Source: Document 'Lecture 3.pdf', Page 5.\n\n" +
-                "This is a mock response for the question: \"" + question + "\"";
+        return askQuestion(code + question);
     }
 
     public String chat(String prompt, String model_name, String api_key) throws IOException {
