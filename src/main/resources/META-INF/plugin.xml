@@ -17,6 +17,18 @@
                 serviceImplementation="com.example.aiplugin.service.MockTaService"
                 serviceInterface="com.example.aiplugin.service.TaService"/>
 
+        <!-- Register PDF/PPT document parsing service -->
+        <projectService
+                serviceImplementation="com.example.aiplugin.service.DocumentParserService"/>
+
+        <!-- Register text chunking and indexing service -->
+        <projectService
+                serviceImplementation="com.example.aiplugin.service.ChunkIndexService"/>
+
+        <!-- Register Markdown export service -->
+        <projectService
+                serviceImplementation="com.example.aiplugin.service.MarkdownExportService"/>
+
         <!-- Register the tool window -->
         <toolWindow
                 id="AI-TA"
@@ -31,6 +43,14 @@
                 text="Ask AI-TA About This Code"
                 description="Ask the AI assistant a question about the selected code.">
             <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+        </action>
+        
+        <!-- Register the PDF/PPT parsing test action -->
+        <action id="com.example.aiplugin.action.TestPdfParsingAction"
+                class="com.example.aiplugin.action.TestPdfParsingAction"
+                text="Test PDF/PPT Parsing"
+                description="Test PDF/PPT parsing, chunking, and indexing functionality.">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
     </actions>
 </idea-plugin>

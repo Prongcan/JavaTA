@@ -1,6 +1,8 @@
 # Gradle
 .gradle
 build/
+target/
+.intelliPlatform/
 
 # Ignore Gradle distribution zips, but not the wrapper jar itself.
 gradle/wrapper/gradle-*-bin.zip
@@ -18,3 +20,8 @@ out/
 
 # Mac OS
 .DS_Store
+
+*.class
+*.jar
+*.war
+EOF
