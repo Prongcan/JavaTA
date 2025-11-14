@@ -141,17 +141,28 @@ public class Retrieval {
 
     // ---- PDF 索引：遍历、逐页解析、分块（带出处）、embedding 并保存 ----
     public void indexPdfDirectory(String rootDir) throws IOException {
+        System.out.println("[Index] Entering indexPdfDirectory with rootDir: " + rootDir);
         File root = new File(rootDir);
-        if (!root.exists() || !root.isDirectory()) return;
+        if (!root.exists() || !root.isDirectory()) {
+            System.err.println("[Index] Root directory does not exist or is not a directory: " + rootDir);
+            return;
+        }
+
         List<File> pdfs = collectPdfs(root);
+        System.out.println("[Index] Found " + pdfs.size() + " PDF files to process.");
+
         for (File pdf : pdfs) {
             long lm = pdf.lastModified();
             String key = pdf.getAbsolutePath();
             Long prev = processedPdfs.get(key);
+
+            System.out.println("[Index] Processing file: " + key);
             if (prev != null && prev == lm) {
-                // 已处理且未修改，跳过
+                System.out.println("[Index] SKIPPING: File has not been modified since last processing.");
                 continue;
             }
+            
+            System.out.println("[Index] STARTING: Indexing new or modified file.");
             int savedCount = 0; // 本文件成功写入的分块数
             // 逐页解析并分块
             try (PDDocument doc = PDDocument.load(pdf)) {
@@ -177,8 +188,9 @@ public class Retrieval {
             if (savedCount > 0) {
                 processedPdfs.put(key, lm);
                 saveProcessedPdfs();
+                System.out.println("[Index] FINISHED: Successfully indexed " + savedCount + " chunks for file: " + key);
             } else {
-                System.err.println("No chunks saved for: " + key + ". Will not mark as processed.");
+                System.err.println("[Index] FAILED: No chunks were saved for file: " + key + ". Will not mark as processed.");
             }
         }
     }

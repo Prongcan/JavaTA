@@ -4,6 +4,8 @@ import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.intellij.ide.util.PropertiesComponent;
+import com.intellij.openapi.project.Project;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -18,25 +20,22 @@ import java.util.List;
 public class AskQuestion {
 
     private static final Gson GSON = new Gson();
+    private static final String PDF_FOLDER_PROPERTY_KEY = "ai_plugin_pdf_folder_path";
 
-    /**
-     * 扩展接口：
-     * question -> String
-     * chat_history -> JSON 字符串（[{role: "user"|"assistant"|"system", content: "..."}, ...]）
-     * code_content -> String
-     * pdf_path -> PDF 根目录（如果不为空则进行解析、分块、向量化并存储，跳过解析过的）
-     */
-    public String askQuestion(String question, String chat_history, String code_content, String pdf_path) {
-        // 1) 建立 Retrieval 对象（参考 Retrieval.main 的用法）
+    public String askQuestion(Project project, String question, String chat_history, String code_content) {
+        // 0. Get PDF path from saved properties
+        String pdfPath = PropertiesComponent.getInstance(project).getValue(PDF_FOLDER_PROPERTY_KEY, "");
+
+        // 1) 建立 Retrieval 对象
         Config cfg = Config.load();
         String openAiKey = cfg.getOpenAIKey();
         Retrieval retrieval = new Retrieval(openAiKey);
 
-        // 2) 如果用户删除了对应 PDF，则先清理对应 embedding；且当 pdf_path 为 null 时，不进行检索
-        boolean doRetrieval = (pdf_path != null);
+        // 2) 如果路径已配置，则进行检索
+        boolean doRetrieval = pdfPath != null && !pdfPath.trim().isEmpty();
         java.util.List<Retrieval.Match> matches = new java.util.ArrayList<>();
         if (doRetrieval) {
-            String pdfRoot = pdf_path.trim();
+            String pdfRoot = pdfPath.trim();
             // 先清理已删除源对应的向量
             try {
                 retrieval.pruneDeletedSources(pdfRoot);
@@ -76,38 +75,37 @@ public class AskQuestion {
             }
         }
 
-        // 4) 解析 chat_history JSON，动态截断到不超过模型上下文（这里用字符近似限制）
+        // 4) 解析 chat_history JSON
         List<JsonObject> trimmedHistory = trimHistory(chat_history, 12000);
 
-        // 5) 组装 Prompt：把检索结果、代码、历史对话拼到 messages 中
+        // 5) 组装 Prompt
         JSONArray messages = new JSONArray();
-        // system with context
         StringBuilder systemCtx = new StringBuilder();
         systemCtx.append("You are a helpful assistant.\n");
         if (retrievedConcat.length() > 0) {
             systemCtx.append("Retrieved context (from PDFs):\n").append(retrievedConcat).append("\n");
             systemCtx.append("When answering, prefer the retrieved context and cite facts succinctly in your reasoning, but do not fabricate sources.\n\n");
+        } else if (doRetrieval) {
+            systemCtx.append("You have access to a knowledge base, but no relevant information was found for this query.\n\n");
         }
         if (code_content != null && !code_content.isEmpty()) {
             systemCtx.append("Relevant code:\n").append(code_content);
         }
         messages.put(new JSONObject().put("role", "system").put("content", systemCtx.toString()));
 
-        // append trimmed history as-is (keep roles user/assistant/system)
         for (JsonObject m : trimmedHistory) {
             String role = m.has("role") ? m.get("role").getAsString() : "user";
             String content = m.has("content") ? m.get("content").getAsString() : "";
             messages.put(new JSONObject().put("role", role).put("content", content));
         }
 
-        // final user turn
         messages.put(new JSONObject().put("role", "user").put("content", question));
 
         // 6) 调用 DeepSeek Chat 接口
         String deepseekKey = cfg.getDeepseekKey();
         String answer;
         try {
-            answer = chat(messages, deepseekKey, cfg); 
+            answer = chat(messages, deepseekKey, cfg);
         } catch (IOException e) {
             throw new RuntimeException("Error communicating with DeepSeek API.", e);
         }
@@ -116,7 +114,6 @@ public class AskQuestion {
         JsonObject resp = new JsonObject();
         resp.addProperty("cited", cited);
         resp.addProperty("retrieval_result", retrievedConcat.toString());
-        // sources 数组
         JsonArray sources = new JsonArray();
         if (matches != null) {
             for (Retrieval.Match m : matches) {
@@ -133,11 +130,6 @@ public class AskQuestion {
         return resp.toString();
     }
 
-    private static String getenvOr(String key, String fallback) {
-        String v = System.getenv(key);
-        return (v == null || v.isEmpty()) ? fallback : v;
-    }
-
     private static List<JsonObject> trimHistory(String chatHistoryJson, int maxChars) {
         List<JsonObject> items = new ArrayList<>();
         if (chatHistoryJson == null || chatHistoryJson.isEmpty()) return items;
@@ -150,13 +142,12 @@ public class AskQuestion {
                 }
             }
         } catch (Exception ignore) {}
-        // 从尾部向前累加，直到达到 maxChars
         List<JsonObject> reversed = new ArrayList<>();
         int acc = 0;
         for (int i = items.size() - 1; i >= 0; i--) {
             JsonObject m = items.get(i);
             String content = m.has("content") ? m.get("content").getAsString() : "";
-            int add = content.length() + 20; // 角色等开销
+            int add = content.length() + 20;
             if (acc + add > maxChars) break;
             reversed.add(0, m);
             acc += add;
@@ -208,14 +199,17 @@ public class AskQuestion {
                 .getString("content");
     }
 
+    /*
+    // main method is commented out as it can no longer be run directly without a Project context
     public static void main(String[] args) {
         AskQuestion aq = new AskQuestion();
         String chatHistory = "[\n  {\"role\":\"user\",\"content\":\"Hi\"},\n  {\"role\":\"assistant\",\"content\":\"Hello! How can I help?\"}\n]";
         String code = "public class Demo { void run(){} }";
         String pdfRoot = "C:\\Users\\lenovo\\Desktop\\JavaTA\\pdfs"; // 请将此路径改为你的 PDF 根目录
         String question = "What is java";
-        String resp = aq.askQuestion(question, chatHistory, code, pdfRoot);
-        System.out.println(resp);
+        // String resp = aq.askQuestion(null, question, chatHistory, code); // This call is now invalid
+        // System.out.println(resp);
     }
+    */
 }
 
