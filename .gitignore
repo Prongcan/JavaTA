@@ -3,8 +3,7 @@
 build/
 
 # Ignore Gradle distribution zips, but not the wrapper jar itself.
-gradle/wrapper/gradle-*-bin.zip
-gradle/wrapper/gradle-*-all.zip
+gradle/wrapper/gradle-*.zip
 
 ### IntelliJ IDEA ###
 .idea/
@@ -12,6 +11,7 @@ gradle/wrapper/gradle-*-all.zip
 *.iml
 *.ipr
 out/
+.intellijPlatform/
 
 # Log files
 *.log

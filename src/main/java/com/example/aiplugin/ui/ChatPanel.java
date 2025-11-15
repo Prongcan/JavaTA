@@ -5,9 +5,15 @@ import com.example.aiplugin.service.TaService;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import com.intellij.diff.DiffContentFactory;
+import com.intellij.diff.DiffManager;
+import com.intellij.diff.requests.SimpleDiffRequest;
 import com.intellij.ide.util.PropertiesComponent;
+import com.intellij.openapi.command.WriteCommandAction;
+import com.intellij.openapi.editor.Editor;
 import com.intellij.openapi.fileChooser.FileChooser;
 import com.intellij.openapi.fileChooser.FileChooserDescriptor;
+import com.intellij.openapi.fileTypes.FileType;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.Messages;
 import com.intellij.openapi.vfs.VirtualFile;
@@ -34,7 +40,6 @@ public class ChatPanel extends JPanel {
 
     private static final String PDF_FOLDER_PROPERTY_KEY = "ai_plugin_pdf_folder_path";
 
-    // Data model for a single chat message
     private static class ChatMessage {
         String sender;
         String message;
@@ -60,16 +65,19 @@ public class ChatPanel extends JPanel {
     private final Gson gson = new Gson();
     private final Project project;
 
-    // Markdown support
     private final Parser mdParser;
     private final HtmlRenderer mdRenderer;
+
+    // Variables to store editor context for code modification
+    private Editor lastActiveEditor;
+    private int selectionStart;
+    private int selectionEnd;
 
     public ChatPanel(Project project) {
         super(new BorderLayout());
         this.project = project;
         this.taService = TaService.getInstance(project);
 
-        // Init Markdown renderer
         MutableDataSet options = new MutableDataSet();
         options.set(Parser.EXTENSIONS, Arrays.asList(TablesExtension.create()));
         mdParser = Parser.builder(options).build();
@@ -96,7 +104,6 @@ public class ChatPanel extends JPanel {
                     }
                     return;
                 }
-                // Open external links in system browser
                 if (e.getURL() != null) {
                     BrowserUtil.browse(e.getURL());
                 }
@@ -105,7 +112,6 @@ public class ChatPanel extends JPanel {
 
         JBScrollPane scrollPane = new JBScrollPane(chatHistory);
 
-        // --- UI Layout Modification ---
         JPanel inputPanel = new JPanel(new BorderLayout());
         inputField = new JTextField();
         sendButton = new JButton("Send");
@@ -121,7 +127,6 @@ public class ChatPanel extends JPanel {
         add(scrollPane, BorderLayout.CENTER);
         add(inputPanel, BorderLayout.SOUTH);
 
-        // --- Action Listeners ---
         sendButton.addActionListener(e -> sendMessage());
         inputField.addKeyListener(new KeyAdapter() {
             @Override
@@ -131,34 +136,30 @@ public class ChatPanel extends JPanel {
                 }
             }
         });
-
         settingsButton.addActionListener(e -> showSettingsDialog());
 
-        rerenderMessages(); // Initial render
+        rerenderMessages();
     }
 
     private void showSettingsDialog() {
-        // 1. Create a file chooser descriptor that only allows selecting directories
         FileChooserDescriptor descriptor = new FileChooserDescriptor(
                 false, true, false, false, false, false)
                 .withTitle("Select PDF Folder")
                 .withDescription("Select the folder containing your course material PDFs.");
-
-        // 2. Show the file chooser dialog
         VirtualFile file = FileChooser.chooseFile(descriptor, project, null);
-
         if (file != null) {
-            // 3. Save the selected path to persistent properties
             String path = file.getPath();
             PropertiesComponent.getInstance(project).setValue(PDF_FOLDER_PROPERTY_KEY, path);
             Messages.showMessageDialog(project, "PDF folder set to:\n" + path, "Settings Saved", Messages.getInformationIcon());
         }
     }
 
-    public void setSelectedCode(String code) {
+    public void setSelectedCode(String code, Editor editor) {
         this.selectedCode = code;
-        if (code != null && !code.isEmpty()) {
-            inputField.requestFocus();
+        this.lastActiveEditor = editor;
+        if (code != null && !code.isEmpty() && editor != null) {
+            this.selectionStart = editor.getSelectionModel().getSelectionStart();
+            this.selectionEnd = editor.getSelectionModel().getSelectionEnd();
         }
     }
 
@@ -168,7 +169,6 @@ public class ChatPanel extends JPanel {
             return;
         }
 
-        // Check if PDF folder is configured
         String pdfPath = PropertiesComponent.getInstance(project).getValue(PDF_FOLDER_PROPERTY_KEY, "");
         if (pdfPath.isEmpty()) {
             Messages.showMessageDialog(project,
@@ -183,12 +183,13 @@ public class ChatPanel extends JPanel {
         setUiLoading(true);
 
         final String currentSelectedCode = selectedCode;
+        final Editor editorContext = lastActiveEditor; // Capture the editor context
         this.selectedCode = null;
+        this.lastActiveEditor = null; // Clear member variable immediately
 
         new SwingWorker<String, Void>() {
             @Override
             protected String doInBackground() {
-                // 1. 准备 chatHistory 参数
                 JsonArray historyArray = new JsonArray();
                 for (ChatMessage msg : messages) {
                     if (msg.sender.equals("AI-TA") && msg.message.equals("Thinking...")) {
@@ -200,34 +201,35 @@ public class ChatPanel extends JPanel {
                     historyArray.add(historyMsg);
                 }
                 String chatHistory = gson.toJson(historyArray);
-
-                // 2. 调用新的 askQuestion 方法 (不再需要传递pdfRoot)
                 return aq.askQuestion(project, question, chatHistory, currentSelectedCode);
             }
 
             @Override
             protected void done() {
                 try {
-                    // 3. 获取并解析返回的JSON字符串
                     String jsonResponse = get();
                     JsonObject responseObj = gson.fromJson(jsonResponse, JsonObject.class);
 
                     String answer = responseObj.get("answer").getAsString();
                     boolean cited = responseObj.get("cited").getAsBoolean();
                     String retrievalResult = cited ? responseObj.get("retrieval_result").getAsString() : null;
+                    String modifiedCode = responseObj.has("code") ? responseObj.get("code").getAsString() : "";
 
                     messages.remove(messages.size() - 1);
 
-                    // 4. 将带有引用信息的答案添加到聊天记录中
                     String finalMessage = answer;
                     if (cited && retrievalResult != null && !retrievalResult.isEmpty()) {
                         finalMessage += "\n\n--- \n**References:**\n" + retrievalResult;
-                    }
-                    else{
+                    } else {
                         finalMessage += "\n\n--- \n**No References**\n";
                     }
 
                     addMessage(new ChatMessage("AI-TA", finalMessage, currentSelectedCode));
+
+                    // F1 Feature: Show diff if code modification is suggested
+                    if (modifiedCode != null && !modifiedCode.isEmpty() && currentSelectedCode != null) {
+                        showCodeModificationDiff(currentSelectedCode, modifiedCode, editorContext);
+                    }
 
                 } catch (Exception e) {
                     messages.remove(messages.size() - 1);
@@ -238,6 +240,46 @@ public class ChatPanel extends JPanel {
                 }
             }
         }.execute();
+    }
+
+    private void showCodeModificationDiff(String originalCode, String modifiedCode, Editor editor) {
+        // Ensure this runs on the UI thread
+        EventQueue.invokeLater(() -> {
+            DiffContentFactory contentFactory = DiffContentFactory.getInstance();
+            SimpleDiffRequest request = new SimpleDiffRequest(
+                    "AI-TA Code Modification Suggestion",
+                    contentFactory.create(originalCode, (FileType) null),
+                    contentFactory.create(modifiedCode, (FileType) null),
+                    "Original Code",
+                    "AI Suggested Code"
+            );
+
+            DiffManager.getInstance().showDiff(project, request);
+
+            int choice = Messages.showYesNoDialog(
+                    project,
+                    "Do you want to apply the AI-generated changes to your code?",
+                    "Apply Changes",
+                    Messages.getQuestionIcon()
+            );
+
+            if (choice == Messages.YES) {
+                applyCodeChanges(modifiedCode, editor);
+            }
+        });
+    }
+
+    private void applyCodeChanges(String modifiedCode, Editor editor) {
+        if (editor == null) {
+            Messages.showErrorDialog(project, "Could not find the original editor to apply changes.", "Error");
+            return;
+        }
+        // All document modifications must be performed in a write action
+        WriteCommandAction.runWriteCommandAction(project, () -> {
+            editor.getDocument().replaceString(selectionStart, selectionEnd, modifiedCode);
+        });
+        // Clear selection
+        editor.getSelectionModel().removeSelection();
     }
 
     private void addMessage(ChatMessage message) {
@@ -270,10 +312,8 @@ public class ChatPanel extends JPanel {
             html.append("<b class='sender'>").append(StringEscapeUtils.escapeHtml4(msg.sender)).append(":</b> ");
 
             if ("AI-TA".equals(msg.sender)) {
-                // Render AI content as Markdown
                 html.append(renderMarkdown(msg.message));
             } else {
-                // Render user/others as plain text
                 html.append(StringEscapeUtils.escapeHtml4(msg.message).replace("\n", "<br>"));
             }
 
@@ -295,9 +335,10 @@ public class ChatPanel extends JPanel {
     private void setUiLoading(boolean isLoading) {
         inputField.setEnabled(!isLoading);
         sendButton.setEnabled(!isLoading);
-        settingsButton.setEnabled(!isLoading); // Also disable settings button while loading
+        settingsButton.setEnabled(!isLoading);
         if (isLoading) {
             addMessage(new ChatMessage("AI-TA", "Thinking...", null));
         }
     }
 }
+

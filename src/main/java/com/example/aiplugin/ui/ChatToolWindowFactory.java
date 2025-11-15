@@ -36,7 +36,7 @@ public class ChatToolWindowFactory implements ToolWindowFactory {
                 }
                 String selectedText = editor.getSelectionModel().getSelectedText();
                 if (selectedText != null && !selectedText.isEmpty()) {
-                    chatPanel.setSelectedCode(selectedText);
+                    chatPanel.setSelectedCode(selectedText, editor);
                 }
             }
         }, project);
