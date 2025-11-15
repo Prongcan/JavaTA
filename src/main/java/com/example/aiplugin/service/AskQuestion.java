@@ -110,7 +110,44 @@ public class AskQuestion {
             throw new RuntimeException("Error communicating with DeepSeek API.", e);
         }
 
-        // 7) 返回包含检索结果、是否引用、引用来源列表
+        // 7) 追加代码智能修改逻辑
+        String codeResult = "";
+        if (code_content != null && !code_content.trim().isEmpty()) {
+            try {
+                JSONArray codeMsgs = new JSONArray();
+                // 系统提示，严格要求输出
+                String sys = String.join("\n",
+                        "你是一个资深的代码助手。",
+                        "任务：根据用户问题判断给定代码是否需要修改；",
+                        "规则：",
+                        "1) 如果无需修改，严格只输出：经判断无需修改代码",
+                        "2) 如果需要修改，直接输出完整的、可替换原文件的修改后代码，不要附加解释、标题、围栏或任何额外文本。",
+                        "3) 输出时不要使用代码块围栏（例如 ```）。" );
+                codeMsgs.put(new JSONObject().put("role", "system").put("content", sys));
+
+                StringBuilder userPrompt = new StringBuilder();
+                userPrompt.append("用户问题：\n").append(question).append("\n\n");
+                userPrompt.append("待判断与可能需要修改的代码：\n");
+                userPrompt.append(code_content);
+
+                codeMsgs.put(new JSONObject().put("role", "user").put("content", userPrompt.toString()));
+
+                String judgeOrPatched = chat(codeMsgs, deepseekKey, cfg);
+                judgeOrPatched = judgeOrPatched == null ? "" : judgeOrPatched.trim();
+                judgeOrPatched = stripCodeFences(judgeOrPatched);
+
+                if (judgeOrPatched.contains("经判断无需修改代码")) {
+                    // 模型判定无需修改，保持 codeResult 为空
+                } else {
+                    codeResult = judgeOrPatched;
+                }
+            } catch (Exception ex) {
+                // 出错时不影响主流程，保持 codeResult 为空
+                System.err.println("Code modify step error: " + ex.getMessage());
+            }
+        }
+
+        // 8) 返回包含检索结果、是否引用、引用来源列表以及 code 字段
         JsonObject resp = new JsonObject();
         resp.addProperty("cited", cited);
         resp.addProperty("retrieval_result", retrievedConcat.toString());
@@ -127,6 +164,7 @@ public class AskQuestion {
         }
         resp.add("sources", sources);
         resp.addProperty("answer", answer);
+        resp.addProperty("code", codeResult);
         return resp.toString();
     }
 
@@ -153,6 +191,34 @@ public class AskQuestion {
             acc += add;
         }
         return reversed;
+    }
+
+    private static String stripCodeFences(String s) {
+        if (s == null) return null;
+        String trimmed = s.trim();
+        // Remove leading and trailing triple backtick fences with optional language
+        if (trimmed.startsWith("```")) {
+            // remove starting fence line
+            int firstNewline = trimmed.indexOf('\n');
+            if (firstNewline >= 0) {
+                trimmed = trimmed.substring(firstNewline + 1);
+            } else {
+                // whole string was just ```lang or ```
+                return "";
+            }
+            // remove ending fence
+            int lastFence = trimmed.lastIndexOf("```\n");
+            if (lastFence < 0) lastFence = trimmed.lastIndexOf("```");
+            if (lastFence >= 0) {
+                trimmed = trimmed.substring(0, lastFence);
+            }
+            return trimmed.trim();
+        }
+        // Also handle inline single backticks expanded over full content
+        if (trimmed.length() >= 2 && trimmed.startsWith("`") && trimmed.endsWith("`")) {
+            trimmed = trimmed.substring(1, trimmed.length() - 1);
+        }
+        return trimmed;
     }
 
     private String chat(JSONArray messages, String api_key, Config cfg) throws IOException {
@@ -206,9 +272,9 @@ public class AskQuestion {
         String chatHistory = "[\n  {\"role\":\"user\",\"content\":\"Hi\"},\n  {\"role\":\"assistant\",\"content\":\"Hello! How can I help?\"}\n]";
         String code = "public class Demo { void run(){} }";
         String pdfRoot = "C:\\Users\\lenovo\\Desktop\\JavaTA\\pdfs"; // 请将此路径改为你的 PDF 根目录
-        String question = "What is java";
-        // String resp = aq.askQuestion(null, question, chatHistory, code); // This call is now invalid
-        // System.out.println(resp);
+        String question = "What is Fan Hongfei?";
+        String resp = aq.askQuestion(question, chatHistory, code, pdfRoot);
+        System.out.println(resp);
     }
     */
 }

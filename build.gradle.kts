@@ -59,6 +59,10 @@ dependencies {
     implementation("org.apache.tika:tika-core:2.9.1")
     implementation("org.apache.commons:commons-text:1.12.0")
 
+    // Markdown rendering
+    implementation("com.vladsch.flexmark:flexmark:0.64.8")
+    implementation("com.vladsch.flexmark:flexmark-ext-tables:0.64.8")
+
     testImplementation(kotlin("test"))
 }
 

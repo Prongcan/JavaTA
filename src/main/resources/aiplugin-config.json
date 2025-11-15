@@ -1,0 +1,31 @@
+{
+  "embeddings": {
+    "file": "embeddings.json",
+    "api_url": "https://api.openai.com/v1/embeddings",
+    "model": "text-embedding-3-small",
+    "api_key": "",
+    "api_key_env": "OPENAI_API_KEY"
+  },
+  "pdf": {
+    "processed_file": "processed_pdfs.json",
+    "chunk_size": 400,
+    "overlap": 200,
+    "default_root": "./pdfs"
+  },
+  "proxy": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 7897
+  },
+  "retrieval": {
+    "top_k": 5,
+    "threshold": 0.4
+  },
+  "chat": {
+    "base_url": "https://api.deepseek.com/v1",
+    "model": "deepseek-chat",
+    "api_key": "",
+    "api_key_env": "DEEPSEEK_API_KEY"
+  }
+}
+
