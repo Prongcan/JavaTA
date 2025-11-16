@@ -8,6 +8,7 @@ import com.intellij.ide.util.PropertiesComponent;
 import com.intellij.openapi.project.Project;
 import org.json.JSONArray;
 import org.json.JSONObject;
+import com.example.aiplugin.service.DocumentParserService;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -42,13 +43,14 @@ public class AskQuestion {
             } catch (Exception e) {
                 System.err.println("Prune error: " + e.getMessage());
             }
-            // 再索引现有 PDF
+            // 再索引现有文档（PDF 和 PPT/PPTX）
             if (!pdfRoot.isEmpty()) {
                 try {
-                    retrieval.indexPdfDirectory(pdfRoot);
+                    DocumentParserService parserService = DocumentParserService.getInstance(project);
+                    retrieval.indexDocumentDirectory(pdfRoot, parserService);
                 } catch (Exception e) {
                     // 不要中断主流程，记录错误即可
-                    System.err.println("Index PDF error: " + e.getMessage());
+                    System.err.println("Index documents error: " + e.getMessage());
                 }
             }
             // 3) 对 question 进行 embedding（不保存），Top-K 语义检索
@@ -165,6 +167,7 @@ public class AskQuestion {
         resp.add("sources", sources);
         resp.addProperty("answer", answer);
         resp.addProperty("code", codeResult);
+        System.out.println(codeResult);
         return resp.toString();
     }
 

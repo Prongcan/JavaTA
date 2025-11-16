@@ -20,17 +20,6 @@ public class RealTaService implements TaService {
         }
     }
 
-    @Override
-    public String askAboutCode(String code, String question) {
-        // Simulate a delay
-        try {
-            Thread.sleep(1500);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-        return askQuestion(code + question);
-    }
-
     public String chat(String prompt, String model_name, String api_key) throws IOException {
         String baseUrl = "";
         if(model_name == "deepseek")

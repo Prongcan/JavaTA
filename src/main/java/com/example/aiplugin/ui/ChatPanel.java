@@ -14,6 +14,7 @@ import com.intellij.openapi.editor.Editor;
 import com.intellij.openapi.fileChooser.FileChooser;
 import com.intellij.openapi.fileChooser.FileChooserDescriptor;
 import com.intellij.openapi.fileTypes.FileType;
+import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.Messages;
 import com.intellij.openapi.vfs.VirtualFile;
@@ -72,6 +73,14 @@ public class ChatPanel extends JPanel {
     private Editor lastActiveEditor;
     private int selectionStart;
     private int selectionEnd;
+    private String selectionFileName;
+    private String selectionFilePath;
+    private int selectionStartLine;
+    private int selectionEndLine;
+
+    // Pending application state after showing diff
+    private String pendingModifiedCode;
+    private Editor pendingEditor;
 
     public ChatPanel(Project project) {
         super(new BorderLayout());
@@ -102,6 +111,26 @@ public class ChatPanel extends JPanel {
                     } catch (NumberFormatException ex) {
                         // Ignore
                     }
+                    return;
+                }
+                // Handle applying or discarding AI changes after user reviewed diff
+                if (desc != null && desc.startsWith("apply:")) {
+                    // User chose to apply changes
+                    if (pendingModifiedCode != null && pendingEditor != null) {
+                        applyCodeChanges(pendingModifiedCode, pendingEditor);
+                        pendingModifiedCode = null;
+                        pendingEditor = null;
+                        addMessage(new ChatMessage("AI-TA", "已应用修改。", null));
+                    } else {
+                        addMessage(new ChatMessage("AI-TA", "没有可应用的修改。", null));
+                    }
+                    return;
+                }
+                if (desc != null && desc.startsWith("discard:")) {
+                    // User chose to discard changes
+                    pendingModifiedCode = null;
+                    pendingEditor = null;
+                    addMessage(new ChatMessage("AI-TA", "已取消本次修改。", null));
                     return;
                 }
                 if (e.getURL() != null) {
@@ -160,6 +189,33 @@ public class ChatPanel extends JPanel {
         if (code != null && !code.isEmpty() && editor != null) {
             this.selectionStart = editor.getSelectionModel().getSelectionStart();
             this.selectionEnd = editor.getSelectionModel().getSelectionEnd();
+
+            // Derive file info and line numbers for preview like Cursor
+            try {
+                com.intellij.openapi.editor.Document doc = editor.getDocument();
+                VirtualFile vf = FileDocumentManager.getInstance().getFile(doc);
+                if (vf != null) {
+                    this.selectionFileName = vf.getName();
+                    this.selectionFilePath = vf.getPath();
+                } else {
+                    this.selectionFileName = null;
+                    this.selectionFilePath = null;
+                }
+                int startLineZeroBased = doc.getLineNumber(this.selectionStart);
+                int endLineZeroBased = doc.getLineNumber(Math.max(this.selectionEnd - 1, this.selectionStart));
+                this.selectionStartLine = startLineZeroBased + 1; // show as 1-based
+                this.selectionEndLine = endLineZeroBased + 1;
+            } catch (Exception ignore) {
+                this.selectionFileName = null;
+                this.selectionFilePath = null;
+                this.selectionStartLine = 0;
+                this.selectionEndLine = 0;
+            }
+        } else {
+            this.selectionFileName = null;
+            this.selectionFilePath = null;
+            this.selectionStartLine = 0;
+            this.selectionEndLine = 0;
         }
     }
 
@@ -178,14 +234,48 @@ public class ChatPanel extends JPanel {
             return;
         }
 
-        addMessage(new ChatMessage("You", question, null));
-        inputField.setText("");
-        setUiLoading(true);
-
+        // Capture selection and editor context BEFORE adding the user message so we can render selection preview
         final String currentSelectedCode = selectedCode;
         final Editor editorContext = lastActiveEditor; // Capture the editor context
+        final String fileNameForPreview = selectionFileName;
+        final String filePathForPreview = selectionFilePath;
+        final int startLineForPreview = selectionStartLine;
+        final int endLineForPreview = selectionEndLine;
+
+        // Clear member variables immediately to avoid state leaking into next turn
         this.selectedCode = null;
-        this.lastActiveEditor = null; // Clear member variable immediately
+        this.lastActiveEditor = null;
+        this.selectionFileName = null;
+        this.selectionFilePath = null;
+        this.selectionStartLine = 0;
+        this.selectionEndLine = 0;
+
+        // Build user message with selection preview and attach selected code in collapsed state
+        if (currentSelectedCode != null && !currentSelectedCode.isEmpty()) {
+            StringBuilder youMsg = new StringBuilder();
+            youMsg.append(question);
+            youMsg.append("\n\n---\n");
+            if (fileNameForPreview != null) {
+                // Cursor-like selection hint
+                String location = fileNameForPreview + (startLineForPreview > 0 && endLineForPreview > 0
+                        ? ": L" + startLineForPreview + "–" + endLineForPreview
+                        : "");
+                youMsg.append("Selection: ").append(location);
+                if (filePathForPreview != null) {
+                    youMsg.append("\n").append(filePathForPreview);
+                }
+            } else {
+                youMsg.append("Selection: (unknown location)");
+            }
+            ChatMessage you = new ChatMessage("You", youMsg.toString(), currentSelectedCode);
+            you.isCodeVisible = false; // default collapsed
+            addMessage(you);
+        } else {
+            addMessage(new ChatMessage("You", question, null));
+        }
+
+        inputField.setText("");
+        setUiLoading(true);
 
         new SwingWorker<String, Void>() {
             @Override
@@ -224,7 +314,7 @@ public class ChatPanel extends JPanel {
                         finalMessage += "\n\n--- \n**No References**\n";
                     }
 
-                    addMessage(new ChatMessage("AI-TA", finalMessage, currentSelectedCode));
+                    addMessage(new ChatMessage("AI-TA", finalMessage, null));
 
                     // F1 Feature: Show diff if code modification is suggested
                     if (modifiedCode != null && !modifiedCode.isEmpty() && currentSelectedCode != null) {
@@ -256,16 +346,14 @@ public class ChatPanel extends JPanel {
 
             DiffManager.getInstance().showDiff(project, request);
 
-            int choice = Messages.showYesNoDialog(
-                    project,
-                    "Do you want to apply the AI-generated changes to your code?",
-                    "Apply Changes",
-                    Messages.getQuestionIcon()
-            );
+            // Do NOT block user with a dialog before they can view the diff.
+            // Instead, store pending state and let the user decide after reviewing.
+            pendingModifiedCode = modifiedCode;
+            pendingEditor = editor;
 
-            if (choice == Messages.YES) {
-                applyCodeChanges(modifiedCode, editor);
-            }
+            // Add an actionable message with links to apply or discard after reviewing
+            String actionMsg = "已打开差异视图。查看后选择： [应用更改](apply:now) 或 [取消](discard:now)";
+            addMessage(new ChatMessage("AI-TA", actionMsg, null));
         });
     }
 
@@ -341,4 +429,3 @@ public class ChatPanel extends JPanel {
         }
     }
 }
-

@@ -26,13 +26,4 @@ public interface TaService {
      * @return The AI's response.
      */
     String askQuestion(String question);
-
-    /**
-     * Handles a question related to a specific code segment.
-     *
-     * @param code The selected code segment.
-     * @param question The user's question about the code.
-     * @return The AI's response.
-     */
-    String askAboutCode(String code, String question);
 }

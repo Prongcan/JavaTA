@@ -1,5 +1,6 @@
 package com.example.aiplugin.service;
 import com.google.gson.Gson;
+import com.example.aiplugin.service.DocumentParserService;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -25,6 +26,80 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 public class Retrieval { 
+
+    // Allow indexing via DocumentParserService to support PDF and PPT/PPTX
+    public void indexDocumentDirectory(String rootDir, DocumentParserService parserService) throws IOException {
+        System.out.println("[Index] Entering indexDocumentDirectory with rootDir: " + rootDir);
+        File root = new File(rootDir);
+        if (!root.exists() || !root.isDirectory()) {
+            System.err.println("[Index] Root directory does not exist or is not a directory: " + rootDir);
+            return;
+        }
+
+        List<File> docs = collectDocs(root);
+        System.out.println("[Index] Found " + docs.size() + " documents to process (pdf/ppt/pptx).");
+
+        for (File f : docs) {
+            long lm = f.lastModified();
+            String key = f.getAbsolutePath();
+            Long prev = processedPdfs.get(key);
+
+            System.out.println("[Index] Processing file: " + key);
+            if (prev != null && prev == lm) {
+                System.out.println("[Index] SKIPPING: File has not been modified since last processing.");
+                continue;
+            }
+
+            int savedCount = 0;
+            String name = f.getName().toLowerCase();
+            try {
+                if (name.endsWith(".pdf")) {
+                    List<DocumentParserService.PageContent> pages = parserService.extractPdfByPages(key);
+                    for (DocumentParserService.PageContent page : pages) {
+                        String text = page.getContent();
+                        if (text == null || text.trim().isEmpty()) continue;
+                        for (String chunk : chunkText(text, 400, 200)) {
+                            try {
+                                List<Float> vec = getEmbedding(chunk);
+                                saveEmbedding(chunk, vec, key, page.getPageNumber(), page.getPageNumber());
+                                savedCount++;
+                            } catch (Exception e) {
+                                System.err.println("Embedding chunk error: " + e.getMessage());
+                            }
+                        }
+                    }
+                } else if (name.endsWith(".ppt") || name.endsWith(".pptx")) {
+                    List<DocumentParserService.SlideContent> slides = parserService.extractPptBySlides(key);
+                    for (DocumentParserService.SlideContent slide : slides) {
+                        String text = slide.getContent();
+                        if (text == null || text.trim().isEmpty()) continue;
+                        for (String chunk : chunkText(text, 400, 200)) {
+                            try {
+                                List<Float> vec = getEmbedding(chunk);
+                                // Use slide number mapped to pageStart/pageEnd
+                                saveEmbedding(chunk, vec, key, slide.getSlideNumber(), slide.getSlideNumber());
+                                savedCount++;
+                            } catch (Exception e) {
+                                System.err.println("Embedding chunk error: " + e.getMessage());
+                            }
+                        }
+                    }
+                } else {
+                    System.out.println("[Index] Skip unsupported file: " + key);
+                }
+            } catch (Exception ex) {
+                System.err.println("[Index] Error processing file: " + key + ", reason: " + ex.getMessage());
+            }
+
+            if (savedCount > 0) {
+                processedPdfs.put(key, lm);
+                saveProcessedPdfs();
+                System.out.println("[Index] FINISHED: Successfully indexed " + savedCount + " chunks for file: " + key);
+            } else {
+                System.err.println("[Index] FAILED: No chunks were saved for file: " + key + ". Will not mark as processed.");
+            }
+        }
+    }
 
     private final Config config = Config.load();
 
@@ -242,6 +317,24 @@ public class Retrieval {
         for (File f : list) {
             if (f.isDirectory()) out.addAll(collectPdfs(f));
             else if (f.getName().toLowerCase().endsWith(".pdf")) out.add(f);
+        }
+        return out;
+    }
+
+    // Collect supported documents (pdf, ppt, pptx)
+    private List<File> collectDocs(File dir) {
+        List<File> out = new ArrayList<>();
+        File[] list = dir.listFiles();
+        if (list == null) return out;
+        for (File f : list) {
+            if (f.isDirectory()) {
+                out.addAll(collectDocs(f));
+            } else {
+                String name = f.getName().toLowerCase();
+                if (name.endsWith(".pdf") || name.endsWith(".ppt") || name.endsWith(".pptx")) {
+                    out.add(f);
+                }
+            }
         }
         return out;
     }
